@@ -1,0 +1,14 @@
+version: "3.9"
+services:
+  mock-svc:
+    image: mock-svc:latest
+    container_name: mock-svc
+    environment:
+      CONFIG_PATH: /config/imposters.js
+    volumes:
+      - ./config/imposters.js:/config/imposters.js:ro
+    ports:
+      - "2525:2525" # mountebank admin
+      - "3101:3101" # example exposed service port
+      - "3102:3102" # another example
+    restart: unless-stopped

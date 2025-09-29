@@ -1,0 +1,20 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:base"],
+  "prConcurrentLimit": 5,
+  "timezone": "UTC",
+  "schedule": ["before 3am on Monday"],
+  "docker": {
+    "pinDigests": true
+  },
+  "regexManagers": [
+    {
+      "fileMatch": ["^Dockerfile$"],
+      "matchStrings": [
+        "FROM bbyars/mountebank@sha256:(?<currentDigest>[a-f0-9]{64})"
+      ],
+      "depNameTemplate": "bbyars/mountebank",
+      "datasourceTemplate": "docker"
+    }
+  ]
+}

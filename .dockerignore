@@ -1,0 +1,9 @@
+# Ignore everything not needed for image build (direct mode only)
+.git
+.gitignore
+README.md
+Dockerfile
+node_modules
+*.ts
+src/
+# Keep entrypoint and example configs available (not excluded)

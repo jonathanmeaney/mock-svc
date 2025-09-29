@@ -1,0 +1,6 @@
+{
+  "name": "mock-svc",
+  "private": true,
+  "description": "Reusable mountebank mock container (direct mode only)",
+  "license": "MIT"
+}

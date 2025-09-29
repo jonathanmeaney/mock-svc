@@ -1,0 +1,150 @@
+name: Build and Push
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/mock-svc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up QEMU (multi-arch emulation)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Login to Docker Hub
+        if: secrets.DOCKERHUB_USERNAME && secrets.DOCKERHUB_TOKEN
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha
+
+      - name: Build (no push / PR only / amd64)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke Test (PR)
+        if: github.event_name == 'pull_request'
+        run: |
+          docker build -t mock-svc:test .
+          # Run smoke-run equivalent inline to avoid depending on host make; ephemeral ports
+          cid=$(docker run -d -p 2525 -p 3101 -v "$PWD/mocks/imposters.json:/config/imposters.json:ro" -e CONFIG_PATH=/config/imposters.json mock-svc:test)
+          echo "Container ID: $cid"
+          # discover ports
+          admin_port="$(docker port "$cid" 2525/tcp | head -n1 | awk -F: '{print $2}')"
+          user_port="$(docker port "$cid" 3101/tcp | head -n1 | awk -F: '{print $2}')"
+          echo "Admin port: $admin_port, User port: $user_port"
+          # copy test script into a temp path (already present in repo); run with adjusted env
+          chmod +x ./test-smoke.sh
+          set +e
+          QUIET=1 MOCK_HOST=localhost ADMIN_PORT=$admin_port USER_PORT=$user_port ./test-smoke.sh > smoke-output.txt 2>&1
+          status=$?
+          docker logs "$cid" > container-logs.txt 2>&1 || true
+          docker rm -f "$cid" >/dev/null
+          echo "Smoke test exit code: $status" >> smoke-output.txt
+          if [ $status -ne 0 ]; then
+            echo "Smoke test failed; see artifacts." >&2
+            exit $status
+          fi
+          echo "✅ Smoke test passed" >> smoke-output.txt
+
+      - name: Upload Smoke Artifacts (PR)
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-artifacts-pr
+          path: |
+            smoke-output.txt
+            container-logs.txt
+          retention-days: 5
+
+      - name: Build and Push (multi-arch)
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke Test (Post-Push)
+        if: github.event_name != 'pull_request'
+        run: |
+          # Use the locally built image (already present) for smoke test
+          docker build -t mock-svc:test .
+          cid=$(docker run -d -p 2525 -p 3101 -v "$PWD/mocks/imposters.json:/config/imposters.json:ro" -e CONFIG_PATH=/config/imposters.json mock-svc:test)
+          admin_port="$(docker port "$cid" 2525/tcp | head -n1 | awk -F: '{print $2}')"
+          user_port="$(docker port "$cid" 3101/tcp | head -n1 | awk -F: '{print $2}')"
+          chmod +x ./test-smoke.sh
+          set +e
+          QUIET=1 MOCK_HOST=localhost ADMIN_PORT=$admin_port USER_PORT=$user_port ./test-smoke.sh > smoke-output.txt 2>&1
+          status=$?
+          docker logs "$cid" > container-logs.txt 2>&1 || true
+          docker rm -f "$cid" >/dev/null
+          echo "Smoke test exit code: $status" >> smoke-output.txt
+          if [ $status -ne 0 ]; then
+            echo "Smoke test failed; see artifacts." >&2
+            exit $status
+          fi
+          echo "✅ Smoke test passed" >> smoke-output.txt
+
+      - name: Upload Smoke Artifacts (Post-Push)
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-artifacts
+          path: |
+            smoke-output.txt
+            container-logs.txt
+          retention-days: 5
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "Event: $GITHUB_EVENT_NAME" >> $GITHUB_STEP_SUMMARY
+          echo "Ref: $GITHUB_REF" >> $GITHUB_STEP_SUMMARY
+          echo "Commit: $GITHUB_SHA" >> $GITHUB_STEP_SUMMARY
+          echo "Image Tags:" >> $GITHUB_STEP_SUMMARY
+          echo '${{ steps.meta.outputs.tags }}' | tr ' ' '\n' >> $GITHUB_STEP_SUMMARY
+          if [ -f smoke-output.txt ]; then
+            echo "\n### Smoke Test Output (tail)" >> $GITHUB_STEP_SUMMARY
+            tail -n 40 smoke-output.txt >> $GITHUB_STEP_SUMMARY || true
+          fi
