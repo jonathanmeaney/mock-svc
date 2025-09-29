@@ -17,6 +17,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write # needed for keyless cosign signing
     env:
       IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/mock-svc
     steps:
@@ -83,6 +84,19 @@ jobs:
           fi
           echo "✅ Smoke test passed" >> smoke-output.txt
 
+      - name: Vulnerability Scan (Trivy) - PR Image
+        if: github.event_name == 'pull_request'
+        uses: aquasecurity/trivy-action@0.20.0
+        with:
+          image-ref: mock-svc:test
+          format: 'table'
+          exit-code: '0'
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          timeout: 5m
+
+
       - name: Upload Smoke Artifacts (PR)
         if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
@@ -125,6 +139,54 @@ jobs:
           fi
           echo "✅ Smoke test passed" >> smoke-output.txt
 
+      - name: Vulnerability Scan (Trivy) - Pushed Image
+        if: github.event_name != 'pull_request'
+        uses: aquasecurity/trivy-action@0.20.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:latest
+          format: 'table'
+          exit-code: '1'
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          timeout: 10m
+
+      - name: Generate SBOM (Syft)
+        if: github.event_name != 'pull_request'
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.IMAGE_NAME }}:latest
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Upload SBOM
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-spdx
+          path: sbom.spdx.json
+          retention-days: 14
+
+      - name: Install Cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.2.3'
+
+      - name: Sign Image (cosign keyless)
+        if: github.event_name != 'pull_request'
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          echo "Signing all produced tags with keyless cosign"
+          echo "${{ steps.meta.outputs.tags }}" | tr ' ' '\n' > tags.txt
+          while read tag; do
+            [ -z "$tag" ] && continue
+            echo "Signing $tag"
+            cosign sign --yes "$tag" || { echo "Failed signing $tag" >&2; exit 1; }
+          done < tags.txt
+          echo "Signatures completed."
+
       - name: Upload Smoke Artifacts (Post-Push)
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
@@ -148,3 +210,11 @@ jobs:
             echo "\n### Smoke Test Output (tail)" >> $GITHUB_STEP_SUMMARY
             tail -n 40 smoke-output.txt >> $GITHUB_STEP_SUMMARY || true
           fi
+          if [ -f sbom.spdx.json ]; then
+            echo "\n### SBOM Generated" >> $GITHUB_STEP_SUMMARY
+            echo "SBOM artifact: sbom.spdx.json (SPDX JSON)" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "\n### Supply Chain Security" >> $GITHUB_STEP_SUMMARY
+          echo "- Trivy vulnerability scan (CRITICAL/HIGH)" >> $GITHUB_STEP_SUMMARY
+          echo "- SBOM (Syft SPDX)" >> $GITHUB_STEP_SUMMARY
+          echo "- Cosign keyless signatures (OIDC)" >> $GITHUB_STEP_SUMMARY

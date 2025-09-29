@@ -1,6 +1,7 @@
 # mock-svc (mountebank-based)
 
-![Build](https://img.shields.io/badge/CI-GitHub_Actions-blue?logo=github)
+![Build](https://github.com/jonathanmeaney/mock-svc/actions/workflows/build.yml/badge.svg)
+![Release](https://github.com/jonathanmeaney/mock-svc/actions/workflows/release.yml/badge.svg)
 
 ## Goal
 
@@ -72,6 +73,7 @@ If you prefer to disable it, override with `--no-healthcheck` or add a trivial o
 - TypeScript tooling & source were removed; image is a thin wrapper over mountebank.
 - `Makefile` provides build/run/smoke targets.
 - GitHub Action workflow (`.github/workflows/build.yml`) can build & push on branch/tag.
+  - Release workflow (`.github/workflows/release.yml`) signs images, creates SBOM & release notes.
 - Licensed under MIT (see `LICENSE`).
 
 ## Make targets
@@ -119,3 +121,18 @@ Update pinned base image digest (will modify Dockerfile):
 chmod +x scripts/update-digest.sh
 scripts/update-digest.sh
 ```
+
+## Supply Chain / Security
+
+- Images are built multi-arch (amd64/arm64).
+- Vulnerability scanning (Trivy) runs in CI (PR: informational, push: fails on HIGH/CRITICAL).
+- SBOM (SPDX JSON) generated via Syft and uploaded as artifact; release SBOM attached to GitHub Release.
+- Images are signed with cosign keyless (OIDC) – verify with:
+
+```bash
+cosign verify $YOUR_DOCKERHUB_USER/mock-svc:latest \
+  --certificate-identity-regexp 'https://github.com/jonathanmeaney/mock-svc' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+- Provenance (SLSA-style attestations) enabled in release workflow (buildx provenance flag).

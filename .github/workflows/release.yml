@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/mock-svc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Login to Docker Hub
+        if: secrets.DOCKERHUB_USERNAME && secrets.DOCKERHUB_TOKEN
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=tag
+            type=sha
+
+      - name: Build & Push Release Image (multi-arch)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Generate SBOM (Syft)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.IMAGE_NAME }}:latest
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Upload SBOM Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-release
+          path: sbom.spdx.json
+          retention-days: 30
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.2.3'
+
+      - name: Sign Release Image (cosign keyless)
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          echo "${{ steps.meta.outputs.tags }}" | tr ' ' '\n' > tags.txt
+          while read tag; do
+            [ -z "$tag" ] && continue
+            cosign sign --yes "$tag"
+          done < tags.txt
+
+      - name: Generate Release Notes
+        id: notes
+        run: |
+          echo 'notes<<EOF' >> $GITHUB_OUTPUT
+          echo "## Image Tags" >> $GITHUB_OUTPUT
+          echo '${{ steps.meta.outputs.tags }}' | tr ' ' '\n' >> $GITHUB_OUTPUT
+          echo "\n### SBOM" >> $GITHUB_OUTPUT
+          echo "SPDX JSON attached as artifact (sbom.spdx.json)." >> $GITHUB_OUTPUT
+          echo "\n### Signing" >> $GITHUB_OUTPUT
+          echo "Images signed with cosign keyless." >> $GITHUB_OUTPUT
+          echo 'EOF' >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body: ${{ steps.notes.outputs.notes }}
+          files: sbom.spdx.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

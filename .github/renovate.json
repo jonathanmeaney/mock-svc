@@ -1,12 +1,23 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:base"],
+  "extends": ["config:base", "docker:pinDigests", "group:allNonMajor"],
   "prConcurrentLimit": 5,
   "timezone": "UTC",
   "schedule": ["before 3am on Monday"],
   "docker": {
     "pinDigests": true
   },
+  "packageRules": [
+    {
+      "matchDatasources": ["docker"],
+      "groupName": "docker-base-images"
+    },
+    {
+      "matchDatasources": ["docker"],
+      "matchUpdateTypes": ["patch"],
+      "stabilityDays": 2
+    }
+  ],
   "regexManagers": [
     {
       "fileMatch": ["^Dockerfile$"],
