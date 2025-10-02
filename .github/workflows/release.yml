@@ -39,6 +39,7 @@ jobs:
           tags: |
             type=ref,event=tag
             type=sha
+            type=raw,value=latest
 
       - name: Build & Push Release Image (multi-arch)
         uses: docker/build-push-action@v5
@@ -53,10 +54,15 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Derive Primary Tag
+        run: |
+          echo "PRIMARY_TAG=$(echo '${{ steps.meta.outputs.tags }}' | tr ' ' '\n' | head -n1)" >> $GITHUB_ENV
+          echo "Primary tag: $PRIMARY_TAG"
+
       - name: Generate SBOM (Syft)
         uses: anchore/sbom-action@v0
         with:
-          image: ${{ env.IMAGE_NAME }}:latest
+          image: ${{ env.PRIMARY_TAG }}
           format: spdx-json
           output-file: sbom.spdx.json
 

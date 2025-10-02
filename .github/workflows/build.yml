@@ -46,6 +46,7 @@ jobs:
             type=ref,event=branch
             type=ref,event=tag
             type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build (no push / PR only / amd64)
         if: github.event_name == 'pull_request'
@@ -86,7 +87,7 @@ jobs:
 
       - name: Vulnerability Scan (Trivy) - PR Image
         if: github.event_name == 'pull_request'
-        uses: aquasecurity/trivy-action@0.20.0
+        uses: aquasecurity/trivy-action@v0.20.0
         with:
           image-ref: mock-svc:test
           format: 'table'
@@ -118,6 +119,11 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Derive Primary Tag
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "PRIMARY_TAG=$(echo '${{ steps.meta.outputs.tags }}' | tr ' ' '\n' | head -n1)" >> $GITHUB_ENV
+          echo "Derived PRIMARY_TAG=$PRIMARY_TAG"
       - name: Smoke Test (Post-Push)
         if: github.event_name != 'pull_request'
         run: |
@@ -141,9 +147,9 @@ jobs:
 
       - name: Vulnerability Scan (Trivy) - Pushed Image
         if: github.event_name != 'pull_request'
-        uses: aquasecurity/trivy-action@0.20.0
+        uses: aquasecurity/trivy-action@v0.20.0
         with:
-          image-ref: ${{ env.IMAGE_NAME }}:latest
+          image-ref: ${{ env.PRIMARY_TAG }}
           format: 'table'
           exit-code: '1'
           vuln-type: 'os,library'
@@ -155,7 +161,7 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: anchore/sbom-action@v0
         with:
-          image: ${{ env.IMAGE_NAME }}:latest
+          image: ${{ env.PRIMARY_TAG }}
           format: spdx-json
           output-file: sbom.spdx.json
 
