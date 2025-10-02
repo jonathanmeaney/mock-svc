@@ -2,5 +2,15 @@
   "name": "mock-svc",
   "private": true,
   "description": "Reusable mountebank mock container (direct mode only)",
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "mountebank": "latest"
+  },
+  "overrides": {
+    "ejs": "3.1.9",
+    "cross-spawn": "7.0.5",
+    "body-parser": "1.20.3",
+    "jsonpath-plus": "10.3.0",
+    "path-to-regexp": "0.1.12"
+  }
 }

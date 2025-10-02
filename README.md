@@ -7,8 +7,10 @@
 
 Build once → reuse in any dockerised app by mounting an external imposters file.
 
-- Base image digest is pinned for reproducible builds; update intentionally when you want a newer mountebank.
-- A simple `test-smoke.sh` script is provided to sanity check a running instance.
+- Multi-stage build installs `mountebank` from npm on a Node LTS (alpine) base.
+- Entry point defaults `CONFIG_PATH` to `/config/imposters.json` (JSON, JS or YAML supported).
+- Overrides patch vulnerable transitive deps (see Security section).
+- `test-smoke.sh` + `make smoke-run` provide a dynamic, colorised verification.
 
 ## Mode
 
@@ -27,9 +29,8 @@ make build   # or: docker build -t mock-svc .
    services:
      mock-svc:
        image: mock-svc:latest
-       environment:
-         CONFIG_MODE: direct
-         CONFIG_PATH: /config/imposters.js
+       # environment:  # (optional) omit if you use the default /config/imposters.json
+       #   CONFIG_PATH: /config/imposters.js
        volumes:
          - ./mocks/imposters.js:/config/imposters.js:ro
        ports:
@@ -49,8 +50,8 @@ make build   # or: docker build -t mock-svc .
 services:
   mock-svc:
     image: mock-svc:latest
-    environment:
-      CONFIG_PATH: /config/imposters.js
+    # environment:
+    #   CONFIG_PATH: /config/imposters.js
     volumes:
       - ./mocks/imposters.js:/config/imposters.js:ro
     ports:
@@ -86,6 +87,7 @@ If you prefer to disable it, override with `--no-healthcheck` or add a trivial o
 | `make smoke`       | Run `test-smoke.sh` against a running instance (assumes ports 2525/3101 published)           | `MOCK_HOST`, `ADMIN_PORT`, `USER_PORT`  |
 | `make push`        | Build then push to registry (requires prior `docker login`)                                  | `IMAGE`, `TAG`                          |
 | `make smoke-run`   | Build, run a disposable container with dynamic host ports, execute smoke test, clean up      | same as run + smoke vars                |
+| `make scan`        | Trivy scan (HIGH/CRITICAL, ignore unfixed) on built image                                    | `IMAGE`, `TAG`                          |
 
 Override examples:
 
@@ -115,17 +117,42 @@ Multi-arch build & push (requires BuildKit + credentials):
 IMAGE=myrepo/mock-svc TAG=v1.0.0 make build-multi
 ```
 
-Update pinned base image digest (will modify Dockerfile):
+Pin a specific mountebank version and/or Node base image:
 
 ```bash
-chmod +x scripts/update-digest.sh
-scripts/update-digest.sh
+docker build \
+  --build-arg MB_VERSION=2.10.0 \
+  --build-arg NODE_IMAGE=node:20.11.1-alpine \
+  -t mock-svc:2.10.0 .
+```
+
+Default config resolution order:
+
+1. Explicit `CONFIG_PATH` env var (if set)
+2. Fallback `/config/imposters.json` (entrypoint internal default)
+3. JS module (`*.js`) auto-converted to JSON
+4. YAML supported when path ends with `.yml` or `.yaml`
+
+## Build Arguments
+
+| Arg          | Default           | Purpose                                                     |
+| ------------ | ----------------- | ----------------------------------------------------------- |
+| `MB_VERSION` | `latest`          | Which mountebank npm version to install                     |
+| `NODE_IMAGE` | `node:lts-alpine` | Base image reference (override to pin exact version/digest) |
+
+Reproducible example (pin Node digest):
+
+```bash
+docker build \
+  --build-arg NODE_IMAGE=node:20.11.1-alpine@sha256:<digest> \
+  --build-arg MB_VERSION=2.10.0 \
+  -t mock-svc:2.10.0 .
 ```
 
 ## Supply Chain / Security
 
 - Images are built multi-arch (amd64/arm64).
-- Vulnerability scanning (Trivy) runs in CI (PR: informational, push: fails on HIGH/CRITICAL).
+- Vulnerability scanning (Trivy) runs in CI (PR: informational, push: fails on HIGH/CRITICAL) and locally via `make scan`.
 - SBOM (SPDX JSON) generated via Syft and uploaded as artifact; release SBOM attached to GitHub Release.
 - Images are signed with cosign keyless (OIDC) – verify with:
 
@@ -136,3 +163,23 @@ cosign verify $YOUR_DOCKERHUB_USER/mock-svc:latest \
 ```
 
 - Provenance (SLSA-style attestations) enabled in release workflow (buildx provenance flag).
+
+### Dependency Overrides
+
+Current overrides in `package.json` mitigating reported CVEs:
+
+```
+ejs@3.1.9
+cross-spawn@7.0.5
+body-parser@1.20.3
+jsonpath-plus@10.3.0
+path-to-regexp@0.1.12
+```
+
+Remove overrides selectively once upstream `mountebank` updates; re-run `make scan` after each removal.
+
+### Recommendations
+
+- Commit a generated `package-lock.json` for full dependency graph reproducibility (currently omitted → semver drift possible).
+- Consider pinning `NODE_IMAGE` by digest in CI for deterministic base.
+- Maintain a minimal `.trivyignore` only for assessed low-risk CVEs (document rationale).
